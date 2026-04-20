@@ -142,17 +142,25 @@ static void imap_handle_abort(ImapSession *);
 void imap_cleanup_deferred(gpointer data)
 {
 	int rx;
+	size_t before, after;
 	dm_thread_data *D = (dm_thread_data *)data;
 	ImapSession *session = (ImapSession *)D->session;
 	ClientBase_T *ci = session->ci;
 
 	ci->deferred++;
 
+	before = ci_wbuf_len(ci);
 	if (ci->rev) event_del(ci->rev);
 	if (ci_wbuf_len(ci) && (! (ci->client_state & CLIENT_ERR)) && (ci->deferred < DEFERRED_MAX_LOOP)) {
 		ci_write_cb(ci);
-		dm_queue_push(imap_cleanup_deferred, session, NULL);
-		return;
+		after = ci_wbuf_len(ci);
+		if (after > 0 && after < before) {
+			dm_queue_push(imap_cleanup_deferred, session, NULL);
+			return;
+		}
+		if (after > 0) {
+			TRACE(TRACE_DEBUG, "[%p] deferred cleanup made no write progress; closing session", ci);
+		}
 	}
 	if (ci->deferred >= DEFERRED_MAX_LOOP) {
 		TRACE(TRACE_DEBUG, "[%p] DEFERRED_MAX_LOOP reached; cleanup session", ci);
