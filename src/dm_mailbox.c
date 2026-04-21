@@ -31,7 +31,6 @@ extern DBParam_T db_params;
 extern Mempool_T small_pool;
 
 #define DBPFX db_params.pfx
-
 /* internal utilities */
 
 /* class methods */
@@ -1345,21 +1344,20 @@ static GTree * mailbox_search(DbmailMailbox *self, search_key *s) {
 		case IST_DATA_TEXT:
 			searchPerformed = 1;
 			TRACE(TRACE_DEBUG, "IST_DATA_TEXT sql");
-			p_string_printf(q, "SELECT DISTINCT m.message_idnr "
-				"FROM %smimeparts k "
-				"LEFT JOIN %spartlists l ON k.id=l.part_id "
-				"LEFT JOIN %sphysmessage p ON l.physmessage_id=p.id "
-				"LEFT JOIN %sheader h ON h.physmessage_id=p.id "
-				"LEFT JOIN %sheadervalue v ON h.headervalue_id=v.id "
-				"LEFT JOIN %smessages m ON m.physmessage_id=p.id "
+			ids = MailboxState_getIds(self->mbstate);
+			sql = 0;
+
+			p_string_printf(q, "SELECT m.message_idnr "
+				"FROM %smessages m "
+				"JOIN %sheader h ON h.physmessage_id = m.physmessage_id "
+				"JOIN %sheadervalue v ON h.headervalue_id = v.id "
 				"WHERE m.mailbox_idnr = ? AND m.status < ? "
 				"%s "
-				"AND (v.headervalue %s ? OR k.data %s ?) "
+				"AND v.headervalue %s ? "
 				"ORDER BY m.message_idnr",
-				DBPFX, DBPFX, DBPFX, DBPFX, DBPFX, DBPFX,
+				DBPFX, DBPFX, DBPFX,
 				inset ? inset : "",
-				db_get_sql(SQL_INSENSITIVE_LIKE),
-				db_get_sql(SQL_SENSITIVE_LIKE)); // pgsql will trip over ilike against bytea 
+				db_get_sql(SQL_INSENSITIVE_LIKE));
 
 			st = db_stmt_prepare(c, p_string_str(q));
 			db_stmt_set_u64(st, 1, dbmail_mailbox_get_id(self));
@@ -1369,7 +1367,61 @@ static GTree * mailbox_search(DbmailMailbox *self, search_key *s) {
 			if (snprintf(partial, DEF_FRAGSIZE - 1, "%%%s%%", s->search) < 0)
 				abort();
 			db_stmt_set_str(st, 3, partial);
-			db_stmt_set_str(st, 4, partial);
+
+			r = db_stmt_query(st);
+			while (db_result_next(r)) {
+				id = db_result_get_u64(r, 0);
+				if (!(w = g_tree_lookup(ids, &id))) {
+					TRACE(TRACE_ERR, "key missing in ids: [%" PRIu64 "]\n", id);
+					continue;
+				}
+				k = mempool_pop(small_pool, sizeof (uint64_t));
+				v = mempool_pop(small_pool, sizeof (uint64_t));
+				*k = id;
+				*v = *w;
+				g_tree_insert(s->found, k, v);
+			}
+
+			if (g_tree_nnodes(s->found) == 0) {
+				TRACE(TRACE_DEBUG, "IST_DATA_TEXT no header hits for [%s], falling back to body search", s->search);
+				p_string_truncate(q, 0);
+				p_string_printf(q, "SELECT m.message_idnr "
+					"FROM %smimeparts k "
+					"JOIN %spartlists l ON k.id = l.part_id "
+					"JOIN %smessages m ON m.physmessage_id = l.physmessage_id "
+					"WHERE m.mailbox_idnr = ? AND m.status < ? "
+					"%s "
+					"AND k.data %s ? "
+					"ORDER BY m.message_idnr",
+					DBPFX, DBPFX, DBPFX,
+					inset ? inset : "",
+					db_get_sql(SQL_SENSITIVE_LIKE)); // pgsql will trip over ilike against bytea
+
+				st = db_stmt_prepare(c, p_string_str(q));
+				db_stmt_set_u64(st, 1, dbmail_mailbox_get_id(self));
+				db_stmt_set_int(st, 2, MESSAGE_STATUS_DELETE);
+
+				memset(partial, 0, sizeof (partial));
+				if (snprintf(partial, DEF_FRAGSIZE - 1, "%%%s%%", s->search) < 0)
+					abort();
+				db_stmt_set_str(st, 3, partial);
+
+				r = db_stmt_query(st);
+				while (db_result_next(r)) {
+					id = db_result_get_u64(r, 0);
+					if (!(w = g_tree_lookup(ids, &id))) {
+						TRACE(TRACE_ERR, "key missing in ids: [%" PRIu64 "]\n", id);
+						continue;
+					}
+					k = mempool_pop(small_pool, sizeof (uint64_t));
+					v = mempool_pop(small_pool, sizeof (uint64_t));
+					*k = id;
+					*v = *w;
+					g_tree_insert(s->found, k, v);
+				}
+			} else {
+				TRACE(TRACE_DEBUG, "IST_DATA_TEXT header-first search [%s] satisfied by [%u] header hits", s->search, g_tree_nnodes(s->found));
+			}
 
 			break;
 
