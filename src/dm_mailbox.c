@@ -1856,6 +1856,16 @@ static gboolean _found_tree_copy(uint64_t *key, uint64_t *val, GTree *tree) {
 	return FALSE;
 }
 
+static GTree *_copy_found_tree(GTree *found) {
+	GTree *copy = g_tree_new_full((GCompareDataFunc) ucmpdata, NULL, (GDestroyNotify) uint64_free, (GDestroyNotify) uint64_free);
+
+	if (found) {
+		g_tree_foreach(found, (GTraverseFunc) _found_tree_copy, copy);
+	}
+
+	return copy;
+}
+
 static gboolean _shallow_tree_copy(uint64_t *key, uint64_t *val, GTree *tree) {
 	g_tree_insert(tree, key, val);
 	return FALSE;
@@ -1951,6 +1961,8 @@ static gboolean _merge_search(GNode *node, GTree *found) {
 	search_key *s = (search_key *) node->data;
 	search_key *a, *b;
 	GNode *x, *y;
+	GTree *afound = NULL, *bfound = NULL;
+	gboolean free_afound = FALSE, free_bfound = FALSE;
 
 	if (s->type == IST_SORT)
 		return FALSE;
@@ -1980,25 +1992,41 @@ static gboolean _merge_search(GNode *node, GTree *found) {
 			a = (search_key *) x->data;
 			b = (search_key *) y->data;
 
-			if (a->type == IST_SUBSEARCH_AND) {
-				g_tree_foreach(found, (GTraverseFunc) _found_tree_copy, a->found);
-				g_node_children_foreach(x, G_TRAVERSE_ALL, (GNodeForeachFunc) _merge_search, (gpointer) a->found);
+			if (a->type == IST_SUBSEARCH_AND || a->type == IST_SUBSEARCH_NOT || a->type == IST_SUBSEARCH_OR) {
+				afound = _copy_found_tree(found);
+				free_afound = TRUE;
+				_merge_search(x, afound);
+			} else {
+				afound = a->found;
 			}
 
-			if (b->type == IST_SUBSEARCH_AND) {
-				g_tree_foreach(found, (GTraverseFunc) _found_tree_copy, b->found);
-				g_node_children_foreach(y, G_TRAVERSE_ALL, (GNodeForeachFunc) _merge_search, (gpointer) b->found);
+			if (b->type == IST_SUBSEARCH_AND || b->type == IST_SUBSEARCH_NOT || b->type == IST_SUBSEARCH_OR) {
+				bfound = _copy_found_tree(found);
+				free_bfound = TRUE;
+				_merge_search(y, bfound);
+			} else {
+				bfound = b->found;
 			}
 
-			g_tree_merge(a->found, b->found, IST_SUBSEARCH_OR);
-			b->merged = TRUE;
-			g_tree_destroy(b->found);
-			b->found = NULL;
+			g_tree_merge(afound, bfound, IST_SUBSEARCH_OR);
 
-			g_tree_merge(s->found, a->found, IST_SUBSEARCH_OR);
-			a->merged = TRUE;
-			g_tree_destroy(a->found);
-			a->found = NULL;
+			if (!free_bfound) {
+				b->merged = TRUE;
+				g_tree_destroy(b->found);
+				b->found = NULL;
+			} else {
+				g_tree_destroy(bfound);
+			}
+
+			g_tree_merge(s->found, afound, IST_SUBSEARCH_OR);
+
+			if (!free_afound) {
+				a->merged = TRUE;
+				g_tree_destroy(a->found);
+				a->found = NULL;
+			} else {
+				g_tree_destroy(afound);
+			}
 
 			g_tree_merge(found, s->found, IST_SUBSEARCH_AND);
 			s->merged = TRUE;
@@ -2062,4 +2090,3 @@ int dbmail_mailbox_search(DbmailMailbox *self) {
 
 	return 0;
 }
-

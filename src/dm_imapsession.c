@@ -119,6 +119,8 @@ ImapSession * dbmail_imap_session_new(Mempool_T pool)
 	self->fi = mempool_pop(self->pool, sizeof(fetch_items));
 	self->capa = Capa_new(self->pool);
 	self->preauth_capa = Capa_new(self->pool);
+	self->tokenizer_paridx = 0;
+	self->tokenizer_parlist[0] = 0;
 
 	Capa_remove(self->preauth_capa, "ACL");
 	Capa_remove(self->preauth_capa, "RIGHTS=texk");
@@ -333,6 +335,8 @@ void dbmail_imap_session_args_free(ImapSession *self, gboolean all)
 		self->args[i] = NULL;
 	}
 	self->args_idx = 0;
+	self->tokenizer_paridx = 0;
+	self->tokenizer_parlist[0] = 0;
 
 	if (all) {
 		mempool_push(self->pool, self->args, sizeof(String_T) * MAX_ARGS);
@@ -1985,10 +1989,9 @@ void dbmail_imap_session_bodyfetch_free(ImapSession *self)
 int imap4_tokenizer_main(ImapSession *self, const char *buffer)
 {
 	int inquote = 0, quotestart = 0;
-	int paridx = 0, argstart = 0;
+	int argstart = 0;
 	unsigned int i = 0;
 	size_t max;
-	char parlist[MAX_LINESIZE];
 	char *s, *lastchar;
 
 	assert(buffer);
@@ -2003,9 +2006,6 @@ int imap4_tokenizer_main(ImapSession *self, const char *buffer)
 //	assert(max <= MAX_LINESIZE);
 
 	/* find the arguments */
-	paridx = 0;
-	parlist[paridx] = NOPAR;
-
 	inquote = 0;
 
 	// if we're not fetching string-literals it's safe to strip NL
@@ -2119,38 +2119,40 @@ int imap4_tokenizer_main(ImapSession *self, const char *buffer)
 				/* check parenthese structure */
 				case ')':
 					
-				if (paridx < 0 || parlist[paridx] != NORMPAR)
-					paridx = -1;
+				if (self->tokenizer_paridx < 0 || self->tokenizer_parlist[self->tokenizer_paridx] != NORMPAR)
+					self->tokenizer_paridx = -1;
 				else {
-					paridx--;
+					self->tokenizer_paridx--;
 				}
 
 				break;
 
 				case ']':
 				
-				if (paridx < 0 || parlist[paridx] != SQUAREPAR)
-					paridx = -1;
+				if (self->tokenizer_paridx < 0 || self->tokenizer_parlist[self->tokenizer_paridx] != SQUAREPAR)
+					self->tokenizer_paridx = -1;
 				else {
-					paridx--;
+					self->tokenizer_paridx--;
 				}
 
 				break;
 
 				case '(':
-				
-				parlist[++paridx] = NORMPAR;
+					if (self->tokenizer_paridx >= IMAP_TOKENIZER_PAREN_MAX - 1)
+						return -1;
+				self->tokenizer_parlist[++self->tokenizer_paridx] = NORMPAR;
 				
 				break;
 
 				case '[':
-				
-				parlist[++paridx] = SQUAREPAR;
+					if (self->tokenizer_paridx >= IMAP_TOKENIZER_PAREN_MAX - 1)
+						return -1;
+				self->tokenizer_parlist[++self->tokenizer_paridx] = SQUAREPAR;
 
 				break;
 			}
 
-			if (paridx < 0) return -1; /* error in parenthesis structure */
+			if (self->tokenizer_paridx < 0) return -1; /* error in parenthesis structure */
 				
 			/* add this parenthesis to the arg list and continue */
 			self->args[self->args_idx] = p_string_new(self->pool, "");
@@ -2213,7 +2215,7 @@ int imap4_tokenizer_main(ImapSession *self, const char *buffer)
 		i--;		/* walked one too far */
 	}
 
-	if (paridx != 0) return -1; /* error in parenthesis structure */
+	if (self->tokenizer_paridx != 0) return -1; /* error in parenthesis structure */
 		
 finalize:
 	if (self->args_idx == 1) {
@@ -2258,6 +2260,3 @@ finalize:
 #undef NOPAR
 #undef NORMPAR
 #undef RIGHTPAR
-
-
-

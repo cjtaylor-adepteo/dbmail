@@ -11,6 +11,7 @@
 
 // command state during idle command
 #define IDLE -1 
+#define IMAP_TOKENIZER_PAREN_MAX 1024
 
 /* ImapSession definition */
 typedef struct {
@@ -32,6 +33,8 @@ typedef struct {
 	int parser_state;
 	String_T *args;
 	uint64_t args_idx;
+	int tokenizer_paridx;
+	char tokenizer_parlist[IMAP_TOKENIZER_PAREN_MAX];
 
 	int loop;              // IDLE loop counter
 
@@ -115,4 +118,3 @@ const char * token_first(ImapSession * self);
 const char * token_next(ImapSession * self);
 
 #endif
-
